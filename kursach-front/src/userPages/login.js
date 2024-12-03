@@ -4,12 +4,12 @@ import { Button } from 'primereact/button';
 import { FloatLabel } from "primereact/floatlabel";
 import {useRef, useState} from "react";
 import {useNavigate} from "react-router-dom";
-import {Checkbox} from "primereact/checkbox";
 import {useCookies} from "react-cookie";
 import {Toast} from "primereact/toast";
+import {isNullOrUndef} from "chart.js/helpers";
 
 // посыл запроса входа в аккаунт на сервер
-export function LoginUser(email, password, toast, navigate, setFunc){
+export function LoginUser(email, password, toast, navigate){
 
     fetch("http://localhost:5113/mail/TestConnect", {
         method: "POST",
@@ -33,9 +33,19 @@ export function LoginUser(email, password, toast, navigate, setFunc){
         .then(data => {
             // Обработка полученных данных (data содержит JSON)
             console.log("Полученные данные:", data);
-            setFunc('currentUser', email);
-            localStorage.setItem('userCredentials', JSON.stringify({email, password}));
-            localStorage.setItem('curUser', "0");
+
+            const credentialsJSON = localStorage.getItem('userCredentials');
+            let users = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+
+            if(users !== []){
+                users.push({email, password});
+                localStorage.setItem('userCredentials', JSON.stringify(users));
+            }
+            else{
+                localStorage.setItem('userCredentials', JSON.stringify({email, password}));
+            }
+
+            localStorage.setItem('curUser', `${users.length - 1}`);
             navigate('/');
         })
         .catch(error => {
@@ -62,10 +72,6 @@ export default function ShowLogin(){
 
     // используется для redirect
     const navigate = useNavigate();
-
-    // cookie - если человек вошёл, запоминаем что он вошёл
-    const [cookie, setCookie] = useCookies(['currentUser']);
-
 
     return(
         <div className="flex flex-column justify-content-center mt-5">
@@ -95,7 +101,7 @@ export default function ShowLogin(){
                     className="my-2 mx-auto"
                     onClick={() => {
                         if(email !== '' && password !== '') {
-                            LoginUser(email, password, toast, navigate, setCookie);
+                            LoginUser(email, password, toast, navigate);
                         }
                         else {
                             toast.current.show({

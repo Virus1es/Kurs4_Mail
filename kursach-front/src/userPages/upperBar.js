@@ -17,43 +17,24 @@ import {isNullOrUndef} from "chart.js/helpers";
 
 
 // выход из аккаунта пользователя
-export function LogoutUser(removeCookie, navigate){
-    fetch("http://localhost:5113/mail/logout", {
-        method: "GET",
-        headers: {
-            "Content-Type": "application/json", // Тип содержимого
-        }
-    })
-        .then(response => {
-            // Обработка ответа от сервера
-            if (!response.ok) {
-                // Проверка на ошибки HTTP (4xx или 5xx)
-                // Создаём ошибку, если ответ не успешный.
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response;
-        })
-        .then(data => {
-            // Обработка полученных данных (data содержит JSON)
-            console.log("Полученные данные:", data);
-            removeCookie('currentUser');
-            navigate('/login');
-        })
-        .catch(error => {
-            // Обработка ошибок
-            console.error("Ошибка:", error);
-        });
-}
+export function LogoutUser(navigate){
+    const credentialsJSON = localStorage.getItem('userCredentials');
+    const data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+    const index = parseInt(localStorage.getItem('curUser'));
 
+    // удаляем аккаунт из списка
+    data.splice(index, 1);
 
-function ShowSlideBar(){
+    if(data.length === 0) {
+        localStorage.removeItem('userCredentials');
+        localStorage.removeItem('curUser');
+    }
+    else {
+        localStorage.setItem('userCredentials', JSON.stringify(data));
+        localStorage.setItem('curUser', '0');
+    }
 
-
-
-
-    return(<>
-
-    </>);
+    window.location.reload();
 }
 
 // собственно сборка верхней панели
@@ -61,39 +42,13 @@ export default function ShowUpperBar() {
     // используется для redirect
     const navigate = useNavigate();
 
-    const [cookies, removeCookie] = useCookies(['currentUser']);
-
     const [visible, setVisible] = useState(false);
 
     const [accountsOption, setAccountsOption] = useState([]);
 
-    const [curAccount, setCurAccount] = useState("");
+    const [curAccount, setCurAccount] = useState(null);
 
-    useEffect(() => {
-        const credentialsJSON = localStorage.getItem('userCredentials');
-        let data = credentialsJSON ? [JSON.parse(credentialsJSON)] : [];
-
-        setCurAccount(data[Number(localStorage.getItem('curUser'))].email);
-
-        let options = data.map((account) => {
-            // выводим текущий аккаунт только сверху
-            if (data[curAccount] === account) {
-                return {
-                    label: account.email,
-                    command: () => {
-                    }
-                };
-            }
-            else
-                return {};
-        });
-
-        options.push({ label: 'Добавить аккаунт', command: () => {} });
-
-        setAccountsOption(options);
-    }, []);
-
-    const accept = () => LogoutUser(removeCookie, navigate);
+    const accept = () => LogoutUser(navigate);
 
     const reject = () => {}
 
@@ -103,6 +58,61 @@ export default function ShowUpperBar() {
         else
             setVisible(true);
     };
+
+    useEffect(() => {
+        if(!isNullOrUndef(localStorage.getItem('userCredentials'))){
+            const credentialsJSON = localStorage.getItem('userCredentials');
+
+            let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+
+            const index = parseInt(localStorage.getItem('curUser'));
+
+            setCurAccount(data[index]?.email);
+        }
+    }, []);
+
+
+    const setNewUser = (newEmail) => {
+        const credentialsJSON = localStorage.getItem('userCredentials');
+
+        let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+
+        let index = data.findIndex(account => account.email === newEmail);
+
+        localStorage.setItem('curUser', `${index}`);
+
+        window.location.reload();
+    }
+
+    useEffect(() => {
+        if(!isNullOrUndef(localStorage.getItem('userCredentials')) && curAccount !== null) {
+            const credentialsJSON = localStorage.getItem('userCredentials');
+            let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+
+            // не выводим текущий аккаунт ещё и снизу
+            let options = data.filter(obj => obj.email !== curAccount)
+                .map((account) => {
+                    return {
+                        label: account.email,
+                        command: () => {
+                            setNewUser(account.email);
+                        }
+                    };
+                });
+
+            options.push({
+                label: 'Добавить аккаунт',
+                icon: 'pi pi-plus-circle',
+                command: () => {
+                    setVisible(false);
+                    navigate('/login');
+                }
+            });
+
+            setAccountsOption(options);
+        }
+    }, [curAccount]);
+
 
     let items = [
         {
