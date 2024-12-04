@@ -20,8 +20,9 @@ public class MailController : Controller
 
     // подключение клиента (проверка аккаунта на правильность ввода данных)
     [HttpPost]
-    public IActionResult TestConnect([FromBody] MailRequest request) { 
-    
+    public IActionResult TestConnect([FromBody] MailRequest request)
+    {
+
         using ImapClient imapClient = new();
         try
         {
@@ -39,6 +40,9 @@ public class MailController : Controller
             return BadRequest(new { Error = ex.Message });
         }
     }
+
+
+    #region Чтение писем
 
     public class LettersMailRequest : MailRequest
     {
@@ -134,6 +138,10 @@ public class MailController : Controller
         }
     }
 
+    #endregion
+
+    #region Отправка писем
+
     public class MailSendRequest
     {
         public string Email { get; set; }
@@ -149,9 +157,12 @@ public class MailController : Controller
     {
         try
         {
+            string connect = request.Email.EndsWith("@yandex.ru") || request.Email.EndsWith("@ya.ru") ? "imap.yandex.ru" : "imap.mail.ru";
+
+
             var message = new MimeMessage();
-            message.From.Add(new MailboxAddress("Your App", request.Email));
-            message.To.Add(new MailboxAddress("Recipient", request.RecipientEmail));
+            message.From.Add(new MailboxAddress(request.Email, request.Email));
+            message.To.Add(new MailboxAddress(request.RecipientEmail, request.RecipientEmail));
             message.Subject = request.Subject;
             message.Body = new TextPart("plain")
             {
@@ -161,7 +172,7 @@ public class MailController : Controller
             using (var client = new SmtpClient())
             {
                 // Подключение к SMTP-серверу
-                client.Connect("smtp.yandex.ru", 465, true);
+                client.Connect(connect, 465, true);
 
                 // Аутентификация
                 client.Authenticate(request.Email, request.AppPassword);
@@ -178,4 +189,6 @@ public class MailController : Controller
             return BadRequest(new { Error = ex.Message });
         }
     }
+
+    #endregion
 }

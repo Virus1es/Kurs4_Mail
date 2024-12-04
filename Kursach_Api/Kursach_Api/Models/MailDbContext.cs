@@ -15,6 +15,8 @@ public partial class MailDbContext : DbContext
     {
     }
 
+    public virtual DbSet<FriendRequest> FriendRequests { get; set; }
+
     public virtual DbSet<MailBoxesKey> MailBoxesKeys { get; set; }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -23,12 +25,19 @@ public partial class MailDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<FriendRequest>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("FriendRequests_PK");
+
+            entity.Property(e => e.UserFrom).HasMaxLength(255);
+            entity.Property(e => e.UserTo).HasMaxLength(255);
+        });
+
         modelBuilder.Entity<MailBoxesKey>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("MailBoxes_PK");
 
             entity.Property(e => e.EncriptOpenKey).HasMaxLength(255);
-            entity.Property(e => e.SignOpenKey).HasMaxLength(255);
             entity.Property(e => e.UserFrom).HasMaxLength(255);
             entity.Property(e => e.UserTo).HasMaxLength(255);
         });
