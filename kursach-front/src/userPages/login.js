@@ -31,9 +31,6 @@ export function LoginUser(email, password, toast, navigate){
         return response;
     })
         .then(data => {
-            // Обработка полученных данных (data содержит JSON)
-            console.log("Полученные данные:", data);
-
             const credentialsJSON = localStorage.getItem('userCredentials');
             let users = credentialsJSON ? JSON.parse(credentialsJSON) : [];
 
