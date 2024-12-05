@@ -12,6 +12,7 @@ import { FloatLabel } from "primereact/floatlabel";
 import { Editor } from "primereact/editor";
 import { FileUpload } from 'primereact/fileupload';
 import { ConfirmDialog } from 'primereact/confirmdialog';
+import { ProgressSpinner } from 'primereact/progressspinner';
 
 export default function ShowHome(){
     // диалоговое окно для отправки письма
@@ -22,6 +23,9 @@ export default function ShowHome(){
 
     // диалоговое окно для ответа на запрос дружбы
     const [visibleFriendCoinf, setVisibleFriendCoinf] = useState(false);
+
+    // показываем пользователю, что письма загружаются (выводим ProgressSpinner)
+    const [showSkeleton, setShowSkeleton] = useState(true);
 
     // для уведомлений Toast
     const toast = useRef(null);
@@ -46,6 +50,9 @@ export default function ShowHome(){
 
     // отправленный запрос дружбы
     const [friendSender, setFriendSender] = useState(null);
+
+    // текущая открытая папка
+    const [curFolder, setCurFolder] = useState('Input');
 
     // сообщение окна подтверждения
     const [coinfMessage, setCoinfMessage] = useState('');
@@ -120,6 +127,51 @@ export default function ShowHome(){
                     icon="pi pi-check"
                     onClick={() => {
                         setVisibleLetterDialog(false);
+
+                        const credentialsJSON = localStorage.getItem('userCredentials');
+
+                        let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+
+                        const index = parseInt(localStorage.getItem('curUser'));
+
+                        fetch("http://localhost:5113/mail/SendMail", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json", // Тип содержимого
+                            },
+                            body: JSON.stringify({
+                                Email: data[index]?.email,
+                                AppPassword: data[index]?.password,
+                                RecipientEmail: mailTo,
+                                Subject: subject,
+                                Body: mailBody
+                            }),
+                        })
+                            .then(response => {
+                                // Обработка ответа от сервера
+                                if (!response.ok) {
+                                    // Проверка на ошибки HTTP (4xx или 5xx)
+                                    // Создаём ошибку, если ответ не успешный.
+                                    throw new Error(`HTTP error! status: ${response.status}`);
+                                }
+                                return response;
+                            })
+                            .then(data => {
+                                toast.current.show({
+                                    severity: 'success',
+                                    summary: 'Письмо отправлен',
+                                    detail: `Письмо отправлено пользователю ${mailTo}`
+                                });
+                            })
+                            .catch(error => {
+                                // Обработка ошибок
+                                console.error("Ошибка:", error);
+                                toast.current.show({
+                                    severity: 'error',
+                                    summary: 'Ошибка',
+                                    detail: 'Что-то пошло не так :('
+                                });
+                            });
                     }}
             />
         </div>
@@ -145,6 +197,8 @@ export default function ShowHome(){
 
         const curUser = data[index];
 
+        setShowSkeleton(true);
+
         try {
             const response = await fetch("http://localhost:5113/mail/GetMails", {
                 method: "POST",
@@ -164,7 +218,8 @@ export default function ShowHome(){
 
             const data = await response.json();
             setLetters(data);
-
+            setCurFolder(folder);
+            setShowSkeleton(false);
         } catch (error) {
             console.error("Ошибка:", error);
             toast.current.show({
@@ -329,7 +384,79 @@ export default function ShowHome(){
         }
     }
 
+    const showSkeletonOrData = () => {
+        if (showSkeleton) {
+            return(
+                <div className="flex align-items-center justify-content-center"
+                    style={{width:"100%", height:"75vh"}}>
+                    <ProgressSpinner />
+                </div>
+                );
+        }
+        else{
+            return (
+                <DataTable value={letters}
+                           tableStyle={{minWidth: '60rem'}}
+                           style={{width: '100%'}}
+                           emptyMessage={"Папка пуста :("}
+                           stripedRows
+                           selectionMode="single"
+                           selection={selectedLetter}
+                           onSelectionChange={(e) => setSelectedLetter(e.value)} dataKey="id"
+                           onRowSelect={onRowSelect}
+                >
+                    <Column field="from" header="Отправитель"></Column>
+                    <Column field="subject" header="Тема"></Column>
+                    <Column field="date" header="Дата"></Column>
+                </DataTable>);
+        }
+    }
+
     const onRowSelect = (event) => {
+        const credentialsJSON = localStorage.getItem('userCredentials');
+
+        let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+
+        const index = parseInt(localStorage.getItem('curUser'));
+
+        fetch("http://localhost:5113/mail/GetLetter", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json", // Тип содержимого
+            },
+            body: JSON.stringify({
+                Email: data[index]?.email,
+                AppPassword: data[index]?.password,
+                Action: curFolder,
+                LetterId: event.data.id
+            }),
+        })
+            .then(response => {
+                // Обработка ответа от сервера
+                if (!response.ok) {
+                    // Проверка на ошибки HTTP (4xx или 5xx)
+                    // Создаём ошибку, если ответ не успешный.
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response;
+            })
+            .then(data => {
+                toast.current.show({
+                    severity: 'success',
+                    summary: 'Письмо отправлен',
+                    detail: `Письмо отправлено пользователю ${mailTo}`
+                });
+            })
+            .catch(error => {
+                // Обработка ошибок
+                console.error("Ошибка:", error);
+                toast.current.show({
+                    severity: 'error',
+                    summary: 'Ошибка',
+                    detail: 'Что-то пошло не так :('
+                });
+            });
+
         toast.current.show({
             severity: 'info',
             summary: 'Product Selected',
@@ -343,20 +470,8 @@ export default function ShowHome(){
             <Menubar model={items}
                      style={{width: '100%'}}
             />
-            <DataTable value={letters}
-                       tableStyle={{ minWidth: '60rem' }}
-                       style={{width: '100%'}}
-                       emptyMessage={"Папка пуста :("}
-                       stripedRows
-                       selectionMode="single"
-                       selection={selectedLetter}
-                       onSelectionChange={(e) => setSelectedLetter(e.value)} dataKey="id"
-                       onRowSelect={onRowSelect}
-            >
-                <Column field="from" header="Отправитель"></Column>
-                <Column field="subject" header="Тема"></Column>
-                <Column field="date" header="Дата"></Column>
-            </DataTable>
+
+            {showSkeletonOrData()}
 
 
             <Dialog header="Написать письмо"
