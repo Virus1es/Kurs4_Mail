@@ -1,28 +1,22 @@
 import {useNavigate} from "react-router-dom";
-import { Menubar } from 'primereact/menubar';
 import {useEffect, useRef, useState} from "react";
 import { DataTable } from 'primereact/datatable';
 import { Column } from 'primereact/column';
 import {isNullOrUndef} from "chart.js/helpers";
 import {Toast} from "primereact/toast";
-import { Dialog } from 'primereact/dialog';
-import { Button } from 'primereact/button';
-import { InputText } from 'primereact/inputtext';
-import { FloatLabel } from "primereact/floatlabel";
-import { Editor } from "primereact/editor";
-import { FileUpload } from 'primereact/fileupload';
 import { ConfirmDialog } from 'primereact/confirmdialog';
 import { ProgressSpinner } from 'primereact/progressspinner';
+import { TabMenu } from 'primereact/tabmenu';
+import {Editor} from "primereact/editor";
+import {Dialog} from "primereact/dialog";
+import { Tag } from 'primereact/tag';
 
 export default function ShowHome(){
-    // диалоговое окно для отправки письма
-    const [visibleLetterDialog, setVisibleLetterDialog] = useState(false);
-
-    // диалоговое окно для отправки запроса дружбы (обмен ключами)
-    const [visibleFriendDialog, setVisibleFriendDialog] = useState(false);
-
     // диалоговое окно для ответа на запрос дружбы
     const [visibleFriendCoinf, setVisibleFriendCoinf] = useState(false);
+
+    // диалоговое окно для чтения письма
+    const [visibleLetterDialog, setVisibleLetterDialog] = useState(false);
 
     // показываем пользователю, что письма загружаются (выводим ProgressSpinner)
     const [showSkeleton, setShowSkeleton] = useState(true);
@@ -36,17 +30,8 @@ export default function ShowHome(){
     // выбранное письмо
     const [selectedLetter, setSelectedLetter] = useState(null);
 
-    // получатель письма
-    const [mailTo, setMailTo] = useState('');
-
-    // тема письма
-    const [subject, setSubject] = useState('');
-
-    // текст письма
-    const [mailBody, setMailBody] = useState('');
-
-    // адрес на который будет отправлен запрос дружбы
-    const [friend, setFriend] = useState('');
+    // информация о письме, пришедшая с сервера
+    const [letterInfo, setLetterInfo] = useState(null);
 
     // отправленный запрос дружбы
     const [friendSender, setFriendSender] = useState(null);
@@ -59,123 +44,7 @@ export default function ShowHome(){
 
     const navigate = useNavigate();
 
-    // попытка отправки запроса дружбы
-    async function sendFriendRequest(from) {
-        try {
-            const response = await fetch("http://localhost:5113/friends/SendFriendRequest", {
-                method: "PUT",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    EmailFrom: from,
-                    EmailTo: friend
-                }),
-            });
-
-            if (!response.ok) {
-                if (response.status === 400) {
-                    const errorData = await response.text();
-                    const errorMessage = errorData || 'Неизвестная ошибка при отправке запроса';
-                    throw new Error(errorMessage);
-                } else {
-                    const text = await response.text();
-                    throw new Error(`HTTP error! status: ${response.status}, message: ${text}`);
-                }
-            }
-
-            const data = await response.text();
-            toast.current.show({
-                severity: 'success',
-                summary: 'Запрос отправлен',
-                detail: "Запрос дружбы отправлен пользователю"
-            });
-        } catch (error) {
-            console.error("Ошибка:", error);
-            toast.current.show({
-                severity: 'error',
-                summary: 'Ошибка',
-                detail: error.message
-            });
-        }
-    }
-
-    // футер для диалогового окна отправки запроса дружбы
-    const footerFriendContent = (
-        <div>
-            <Button label="Отправить"
-                    icon="pi pi-check"
-                    onClick={() => {
-                        setVisibleFriendDialog(false);
-
-                        const credentialsJSON = localStorage.getItem('userCredentials');
-
-                        let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
-
-                        const index = parseInt(localStorage.getItem('curUser'));
-
-                        sendFriendRequest(data[index]?.email);
-                    }}
-            />
-        </div>
-    );
-
-    // футер диалогового окна отправки письма
-    const footerLetterContent = (
-        <div>
-            <Button label="Отправить"
-                    icon="pi pi-check"
-                    onClick={() => {
-                        setVisibleLetterDialog(false);
-
-                        const credentialsJSON = localStorage.getItem('userCredentials');
-
-                        let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
-
-                        const index = parseInt(localStorage.getItem('curUser'));
-
-                        fetch("http://localhost:5113/mail/SendMail", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json", // Тип содержимого
-                            },
-                            body: JSON.stringify({
-                                Email: data[index]?.email,
-                                AppPassword: data[index]?.password,
-                                RecipientEmail: mailTo,
-                                Subject: subject,
-                                Body: mailBody
-                            }),
-                        })
-                            .then(response => {
-                                // Обработка ответа от сервера
-                                if (!response.ok) {
-                                    // Проверка на ошибки HTTP (4xx или 5xx)
-                                    // Создаём ошибку, если ответ не успешный.
-                                    throw new Error(`HTTP error! status: ${response.status}`);
-                                }
-                                return response;
-                            })
-                            .then(data => {
-                                toast.current.show({
-                                    severity: 'success',
-                                    summary: 'Письмо отправлен',
-                                    detail: `Письмо отправлено пользователю ${mailTo}`
-                                });
-                            })
-                            .catch(error => {
-                                // Обработка ошибок
-                                console.error("Ошибка:", error);
-                                toast.current.show({
-                                    severity: 'error',
-                                    summary: 'Ошибка',
-                                    detail: 'Что-то пошло не так :('
-                                });
-                            });
-                    }}
-            />
-        </div>
-    );
+    const [activeIndex, setActiveIndex] = useState(0);
 
     const checkUser = () => {
         if(isNullOrUndef(localStorage.getItem('userCredentials'))) {
@@ -232,13 +101,6 @@ export default function ShowHome(){
 
     const items = [
         {
-            label: 'Написать письмо',
-            icon: 'pi pi-envelope',
-            command: () => {
-                setVisibleLetterDialog(true);
-            }
-        },
-        {
             label: 'Входящие',
             icon: 'pi pi-inbox',
             command: () => {
@@ -265,14 +127,7 @@ export default function ShowHome(){
             command: () => {
                 getLettersByCommand('Trash');
             }
-        },
-        {
-            label: 'Отправить запрос дружбы',
-            icon: 'pi pi-user-plus',
-            command: () => {
-                setVisibleFriendDialog(true);
-            }
-        },
+        }
     ];
 
     useEffect(() => {
@@ -412,6 +267,15 @@ export default function ShowHome(){
         }
     }
 
+    // проверка начинается ли строка с подстроки
+    function startsWithString(str, subStr) {
+        if (subStr.length > str.length) {
+            return false; // Подстрока длиннее исходной строки
+        }
+        return str.slice(0, subStr.length) === subStr;
+    }
+
+    // действие при нажатии на письмо в списке(открытие письма)
     const onRowSelect = (event) => {
         const credentialsJSON = localStorage.getItem('userCredentials');
 
@@ -438,14 +302,14 @@ export default function ShowHome(){
                     // Создаём ошибку, если ответ не успешный.
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                return response;
+                return response.json();
             })
             .then(data => {
-                toast.current.show({
-                    severity: 'success',
-                    summary: 'Письмо отправлен',
-                    detail: `Письмо отправлено пользователю ${mailTo}`
-                });
+                if(typeof data === 'string' && startsWithString(data, 'Ошибка')) {
+                    throw new Error(`Error! ${data}`);
+                }
+                setLetterInfo(data);
+                setVisibleLetterDialog(true);
             })
             .catch(error => {
                 // Обработка ошибок
@@ -456,85 +320,43 @@ export default function ShowHome(){
                     detail: 'Что-то пошло не так :('
                 });
             });
-
-        toast.current.show({
-            severity: 'info',
-            summary: 'Product Selected',
-            detail: `Name: ${event.data.id}`,
-            life: 3000
-        });
     };
+
+    const letterFooter = (
+        <Tag className="text-base"
+             style={{height: '30px'}}
+             icon="pi pi-check"
+             severity="success"
+             value="Подписан">
+        </Tag>
+    );
 
     return(
         <div>
-            <Menubar model={items}
-                     style={{width: '100%'}}
-            />
+            <TabMenu model={items}
+                     activeIndex={activeIndex}
+                     onTabChange={(e) => setActiveIndex(e.index)} />
 
             {showSkeletonOrData()}
 
-
-            <Dialog header="Написать письмо"
+            <Dialog header={letterInfo?.subject}
                     visible={visibleLetterDialog}
                     style={{ width: '60vw' }}
                     onHide={() => {if (!visibleLetterDialog) return; setVisibleLetterDialog(false); }}
-                    footer={footerLetterContent}
+                    footer={letterFooter}
             >
                 <div className="card">
-                    <div className="flex justify-content-around"
-                         style={{width: '100%', padding: '20px'}}
-                    >
-                        <FloatLabel style={{ margin: '5px'}}>
-                            <InputText id="mailTo"
-                                       value={mailTo}
-                                       onChange={(e) => setMailTo(e.target.value)}
-                            />
-                            <label htmlFor="mailTo">Кому</label>
-                        </FloatLabel>
-
-                        <FloatLabel style={{ margin: '5px'}}>
-                            <InputText id="subject"
-                                       value={subject}
-                                       onChange={(e) => setSubject(e.target.value)}
-                            />
-                            <label htmlFor="subject">Тема</label>
-                        </FloatLabel>
-
-                        <FileUpload mode="basic"
-                                    name="demo[]"
-                                    url="/api/upload"
-                                    accept="file/*"
-                                    maxFileSize={1000000}
-                                    chooseLabel="Выбрать файлы"
-                        />
-                    </div>
-
-                    <Editor value={mailBody}
-                            onTextChange={(e) => setMailBody(e.htmlValue)}
-                            style={{ height: '320px' }} />
+                    <p>
+                        Отправитель: {letterInfo?.from}
+                    </p>
+                    <Editor value={letterInfo?.textBody}
+                            readOnly
+                            style={{height: '320px'}}
+                            headerTemplate={<></>}
+                    />
 
                 </div>
             </Dialog>
-
-
-            <Dialog header="Отправить запрос дружбы"
-                    visible={visibleFriendDialog}
-                    style={{ width: '30vw' }}
-                    onHide={() => {if (!visibleFriendDialog) return; setVisibleFriendDialog(false); }}
-                    footer={footerFriendContent}
-            >
-                <div className="card flex justify-content-around"
-                     style={{width: '100%', padding: '20px'}}>
-                    <FloatLabel style={{ margin: '5px'}}>
-                        <InputText id="friend"
-                                   value={friend}
-                                   onChange={(e) => setFriend(e.target.value)}
-                        />
-                        <label htmlFor="mailTo">Кому</label>
-                    </FloatLabel>
-                </div>
-            </Dialog>
-            <Toast ref={toast}/>
 
             <ConfirmDialog group="declarative"
                            visible={visibleFriendCoinf}
@@ -551,6 +373,7 @@ export default function ShowHome(){
                            reject={() => {
                                answerOnFriendRequest(false);
                            }} />
+            <Toast ref={toast} />
         </div>
     );
 }
