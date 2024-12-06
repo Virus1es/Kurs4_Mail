@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using Kursach_Api.Models;
 using System.Xml;
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 
 namespace Kursach_Api.Controllers;
 
@@ -82,25 +83,46 @@ public class MailController(MailDbContext context) : Controller
         string combinedDataStringFromMail = getMailText(message);
 
         // Преобразование обратно в байты
-        byte[] combinedDataFromMail = Convert.FromBase64String(combinedDataStringFromMail);
+        byte[] combinedData = Convert.FromBase64String(combinedDataStringFromMail);
 
-        // Извлекаем длину
-        byte[] lengthBytesFromMail = combinedDataFromMail.Take(sizeof(int)).ToArray();
-        if (BitConverter.IsLittleEndian)
-            Array.Reverse(lengthBytesFromMail); // Если Little Endian,  нужно изменить порядок байт
-        int encryptedTripleDESKeyLength = BitConverter.ToInt32(lengthBytesFromMail);
+        // Разделяем данные
+        // Длинна подписи
+        int signedMessageLength = BitConverter.ToInt32(combinedData, 0); 
 
-        // Извлекаем encryptedTripleDESKey и encryptedTripleDES
-        byte[] encryptedTripleDESKey = combinedDataFromMail.Skip(sizeof(int)).Take(encryptedTripleDESKeyLength).ToArray();
-        byte[] encryptedTripleDES = combinedDataFromMail.Skip(sizeof(int) + encryptedTripleDESKeyLength).ToArray();
+        // Подпись
+        byte[] signedMessage = combinedData.AsSpan(4, signedMessageLength).ToArray();
 
-        // Расшифровываем ключ TripleDES с помощью RSA
+        // Длинна публичного ключа DSA
+        int publicKeyXmlLength = BitConverter.ToInt32(combinedData, 4 + signedMessageLength);
+
+        // Публичный ключ DSA
+        byte[] publicKeyXml = combinedData.AsSpan(8 + signedMessageLength, publicKeyXmlLength).ToArray();
+
+        // Длинна зашифрованного ключа 3DES
+        int encryptedTripleDESKeyLength = BitConverter.ToInt32(combinedData, 8 + signedMessageLength + publicKeyXmlLength);
+
+        // Зашифрованный ключ 3DES
+        byte[] encryptedTripleDESKey = combinedData.AsSpan(12 + signedMessageLength + publicKeyXmlLength, encryptedTripleDESKeyLength).ToArray();
+
+        // Зашифрованное сообщение (оставшиеся данные)
+        byte[] encryptedTripleDES = combinedData.AsSpan(12 + signedMessageLength + publicKeyXmlLength + encryptedTripleDESKeyLength).ToArray();
+
+        // Парсинг открытого ключа DSA
+        DSAParameters publicKeyDsa = ParseDsaPublicKeyFromXml(publicKeyXml);
+
+        // Дешифруем ключ TripleDES с помощью RSA
         byte[] decryptedTripleDESKey = DecryptRSA(encryptedTripleDESKey, privateKey);
 
-        // Расшифровываем сообщение с помощью TripleDES и расшифрованного ключа
-        string decryptedText = DecryptTripleDES(encryptedTripleDES, decryptedTripleDESKey);
+        // Дешифруем сообщение с помощью TripleDES и расшифрованного ключа
+        string decryptedMessage = DecryptTripleDES(encryptedTripleDES, decryptedTripleDESKey);
 
-        return decryptedText;
+        // Проверяем подпись
+        bool isValidSignature = VerifySignature(decryptedMessage, signedMessage, publicKeyDsa);
+        
+        // если подпись оказалась не действиетльной кидаем исключение (данные повреждены показать их нельзя)
+        if (!isValidSignature) throw new Exception("Подпись недействительна!");
+
+        return decryptedMessage;
     }
 
     private string getMailText(MimeMessage message)
@@ -242,6 +264,38 @@ public class MailController(MailDbContext context) : Controller
 
     #region Проверка подписи
 
+    // Проверка подписи с использованием DSA
+    private bool VerifySignature(string message, byte[] signature, DSAParameters publicKey)
+    {
+        using DSACryptoServiceProvider dsa = new();
+
+        dsa.ImportParameters(publicKey);
+
+        byte[] data = Encoding.UTF8.GetBytes(message);
+
+        using SHA1 sha1 = SHA1.Create();
+
+        byte[] hash = sha1.ComputeHash(data);
+
+        return dsa.VerifyHash(hash, "SHA1", signature);
+    }
+
+    // Парсинг открытого ключа DSA из XML
+    private DSAParameters ParseDsaPublicKeyFromXml(byte[] xmlPublicKey)
+    {
+        string xmlString = Encoding.UTF8.GetString(xmlPublicKey);
+        XmlDocument doc = new XmlDocument();
+        doc.LoadXml(xmlString);
+
+        DSAParameters parameters = new DSAParameters();
+        parameters.P = Convert.FromBase64String(doc.SelectSingleNode("/DSAKeyValue/P").InnerText);
+        parameters.Q = Convert.FromBase64String(doc.SelectSingleNode("/DSAKeyValue/Q").InnerText);
+        parameters.G = Convert.FromBase64String(doc.SelectSingleNode("/DSAKeyValue/G").InnerText);
+        parameters.Y = Convert.FromBase64String(doc.SelectSingleNode("/DSAKeyValue/Y").InnerText);
+
+        return parameters;
+    }
+
     #endregion
 
 
@@ -336,7 +390,6 @@ public class MailController(MailDbContext context) : Controller
     }
 
     // открыть конкретное письмо
-    // _db.Database.ExecuteSqlRaw($"exec CheckUserFriends '{dateStart:yyyy-MM-dd}', '{dateEnd:yyyy-MM-dd}'")
     [HttpPost]
     public JsonResult GetLetter([FromBody] LetterById request)
     {
@@ -382,8 +435,10 @@ public class MailController(MailDbContext context) : Controller
 
             try
             {
+                string mailTo = ExtractQuotedText(message.To.ToString());
+
                 // получаем всех друзей текущего пользователя (читающего письмо)
-                List<string> friends = _db.Database.SqlQuery<string>($"exec CheckUserFriends '{ExtractQuotedText(message.To.ToString())}'")
+                List<string> friends = _db.Database.SqlQuery<string>($"exec CheckUserFriends {mailTo}")
                                                    .ToList();
 
                 // проверяем что письмо пришло от друга
@@ -408,7 +463,7 @@ public class MailController(MailDbContext context) : Controller
         }
         catch (Exception ex)
         {
-            return new(ex.Message);
+            return new($"Ошибка: {ex.Message}");
         }
     }
 
@@ -429,6 +484,15 @@ public class MailController(MailDbContext context) : Controller
         // Генерируем ключ для TripleDES
         byte[] tripleDESKey = GenerateTripleDESKey();
 
+        // создание пары ключей DSA для подписи
+        DSAParameters dsaParams = GenerateDsaKeyPair();
+
+        // Экспорт открытого ключа в XML
+        byte[] publicKeyXml = ExportDsaPublicKey(dsaParams); 
+
+        // подписание сообщения
+        byte[] signedMessage = SignMessage(request.Body, dsaParams);
+
         // Шифруем сообщение с помощью TripleDES
         byte[] encryptedTripleDES = EncryptTripleDES(request.Body, tripleDESKey);
 
@@ -438,13 +502,19 @@ public class MailController(MailDbContext context) : Controller
         // Шифруем ключ 3des с помощью RSA
         byte[] encryptedTripleDESKey = EncryptRSA(tripleDESKey, publicKeyParams);
 
-        // Добавляем длину encryptedTripleDESKey в начало
-        byte[] lengthBytes = BitConverter.GetBytes(encryptedTripleDESKey.Length);
-        if (BitConverter.IsLittleEndian)
-            Array.Reverse(lengthBytes); // Если Little Endian,  нужно изменить порядок байт
+        // Подпись
+        byte[] signedMessageLength = BitConverter.GetBytes(signedMessage.Length);
 
-        // Объединяем массивы
-        byte[] combinedData = lengthBytes.Concat(encryptedTripleDESKey).Concat(encryptedTripleDES).ToArray();
+        // Открытый ключ подписи
+        byte[] publicKeyXmlLength = BitConverter.GetBytes(publicKeyXml.Length);
+
+        // Ключ 3DES
+        byte[] encryptedTripleDESKeyLength = BitConverter.GetBytes(encryptedTripleDESKey.Length);
+
+        byte[] combinedData = signedMessageLength.Concat(signedMessage)
+            .Concat(publicKeyXmlLength).Concat(publicKeyXml)
+            .Concat(encryptedTripleDESKeyLength).Concat(encryptedTripleDESKey)
+            .Concat(encryptedTripleDES).ToArray();
 
         // Преобразование в строку для отправки
         return Convert.ToBase64String(combinedData);
@@ -471,7 +541,6 @@ public class MailController(MailDbContext context) : Controller
             return null;
         }
     }
-
 
     // Генерирует случайный ключ для TripleDES
     public static byte[] GenerateTripleDESKey()
@@ -514,6 +583,37 @@ public class MailController(MailDbContext context) : Controller
     #endregion
 
     #region Подпись
+
+    //Подпись сообщения с использованием DSA
+    private byte[] SignMessage(string message, DSAParameters privateKey)
+    {
+        using DSACryptoServiceProvider dsa = new();
+
+        dsa.ImportParameters(privateKey);
+
+        byte[] data = Encoding.UTF8.GetBytes(message);
+
+        byte[] hash = SHA1.HashData(data);
+
+        return dsa.SignHash(hash, "SHA1");
+    }
+
+    //Генерирует пару ключей DSA
+    private DSAParameters GenerateDsaKeyPair()
+    {
+        // указываем длину ключа (2048 бит)
+        using var dsa = new DSACryptoServiceProvider();
+
+        // экспортируем параметры (включая закрытый ключ)
+        return dsa.ExportParameters(true);
+    }
+
+    // Экспортируем открытый ключ DSA в XML
+    private byte[] ExportDsaPublicKey(DSAParameters parameters)
+    {
+        string xml = $"<DSAKeyValue><P>{Convert.ToBase64String(parameters.P)}</P><Q>{Convert.ToBase64String(parameters.Q)}</Q><G>{Convert.ToBase64String(parameters.G)}</G><Y>{Convert.ToBase64String(parameters.Y)}</Y></DSAKeyValue>";
+        return Encoding.UTF8.GetBytes(xml);
+    }
 
     #endregion
 
@@ -574,6 +674,12 @@ public class MailController(MailDbContext context) : Controller
 
                 // открываем папку на редактирование
                 sentFolder.Open(FolderAccess.ReadWrite);
+
+                // отправителю сохраняем письмо без какого-либо шифрования
+                message.Body = new TextPart("plain")
+                {
+                    Text = request.Body
+                };
 
                 // Сохранение сообщения
                 sentFolder.Append(message, MessageFlags.Seen);
