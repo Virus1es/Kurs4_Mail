@@ -1,15 +1,17 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Mvc;
 using MailKit.Security;
 using MailKit.Net.Imap;
 using MimeKit;
 using MailKit.Net.Smtp;
 using MailKit;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
-using Kursach_Api.Models;
 using System.Xml;
-using Microsoft.EntityFrameworkCore;
-using System.Text;
+using System.Linq;
+using Kursach_Api.Models;
+using MailKit.Search;
 
 namespace Kursach_Api.Controllers;
 
@@ -66,6 +68,32 @@ public class MailController(MailDbContext context) : Controller
     }
 
     #region Дешифрование
+    
+    // дешифровка файлов прикреплённых к письму
+    private byte[] DecryptFile3DES(byte[] encryptedData, byte[] encryptedKeyAndIV, RSAParameters rsaPrivateKey)
+    {
+        // Расшифровка ключа и IV с помощью RSA
+        byte[] keyAndIV = DecryptRSA(encryptedKeyAndIV, rsaPrivateKey);
+
+        // Извлечение ключа и IV для 3DES
+        byte[] key = keyAndIV.Take(24).ToArray(); // Первые 24 байта — ключ
+        byte[] iv = keyAndIV.Skip(24).Take(8).ToArray(); // Последние 8 байт — IV
+
+        // Расшифровка данных с использованием 3DES
+        using MemoryStream decryptedStream = new();
+        using (TripleDESCryptoServiceProvider tripleDES = new())
+        {
+            tripleDES.Key = key;
+            tripleDES.IV = iv;
+            tripleDES.Mode = CipherMode.CBC;
+            tripleDES.Padding = PaddingMode.PKCS7;
+
+            using CryptoStream cryptoStream = new(decryptedStream, tripleDES.CreateDecryptor(), CryptoStreamMode.Write);
+            cryptoStream.Write(encryptedData, 0, encryptedData.Length);
+        }
+
+        return decryptedStream.ToArray(); // Возвращаем расшифрованные данные
+    }
 
     // дешифрование тела письма
     public string DecriptMailBody(MimeMessage message)
@@ -82,8 +110,11 @@ public class MailController(MailDbContext context) : Controller
         // получить текст письма
         string combinedDataStringFromMail = getMailText(message);
 
+        // Читаем данные до первой строки с '\n'
+        string firstLine = combinedDataStringFromMail.Split(['\n'], 2)[0];
+
         // Преобразование обратно в байты
-        byte[] combinedData = Convert.FromBase64String(combinedDataStringFromMail);
+        byte[] combinedData = Convert.FromBase64String(firstLine);
 
         // Разделяем данные
         // Длинна подписи
@@ -159,8 +190,6 @@ public class MailController(MailDbContext context) : Controller
                 text += ExtractTextFromMultipart(nestedMultipart);
             else if (part is MessagePart messagePart)
                 text += ExtractTextFromMessagePart(messagePart);
-            else
-                Console.WriteLine($"Неподдерживаемый тип части: {part.ContentType}");
         }
         return text;
     }
@@ -186,7 +215,6 @@ public class MailController(MailDbContext context) : Controller
             return "";
         }
     }
-
 
     // Расшифровывает текст, зашифрованный TripleDES
     public static string DecryptTripleDES(byte[] encryptedData, byte[] key)
@@ -423,15 +451,13 @@ public class MailController(MailDbContext context) : Controller
             var folder = getFolder();
 
             // создаём переменную для всех сообщений
-            var messages = new List<object>();
-
-            // Читаем последние письма
             folder.Open(FolderAccess.ReadOnly);
 
             // берём сообщение
             var message = folder.GetMessage(request.LetterId);
 
             string decriptText = "";
+            var decryptedFiles = new List<string>(); // Список для сохранённых файлов
 
             try
             {
@@ -441,10 +467,65 @@ public class MailController(MailDbContext context) : Controller
                 List<string> friends = _db.Database.SqlQuery<string>($"exec CheckUserFriends {mailTo}")
                                                    .ToList();
 
-                // проверяем что письмо пришло от друга
-                decriptText = friends.Any(f => f.Equals(ExtractQuotedText(message.From.ToString()))) ?
+                // достаём сообщение, для проверки его на пустоту,
+                // и если сообщение пришло не от дурга или оно пустое, то это же мы и отдаём 
+                string mailBody = getMailText(message).Replace("\n", "").Replace("\r", "").Replace("\t", "");
+
+                bool senderIsFriend = friends.Any(f => f.Equals(ExtractQuotedText(message.From.ToString())));
+
+                // проверяем, что письмо пришло от друга
+                // и проверяем чтоб оно было не пустым
+                decriptText = senderIsFriend && !string.IsNullOrEmpty(mailBody) ?
                      DecriptMailBody(message) : // расшифровываем текст сообщения
-                     getMailText(message);      // иначе передаём просто текст сообщения
+                     mailBody;                  // иначе передаём просто текст сообщения
+
+                // Обработка вложений
+                var multipart = message.Body as Multipart;
+                if (multipart != null && senderIsFriend)
+                {
+                    string filePath = $"{_usersFolder}/{ExtractQuotedText(message.To.ToString())}/keys/for {ExtractQuotedText(message.From.ToString())}.xml";
+
+                    // находим закрытый ключ получателя для дешифрования данных от конкретного отправителя
+                    if (!System.IO.File.Exists(filePath))
+                        throw new Exception("Файл закрытого ключа не найден");
+
+                    foreach (var part in multipart)
+                    {
+                        if (part is MimePart attachment && attachment.ContentType.MimeType == "application/octet-stream")
+                        {
+                            // Это зашифрованный файл
+                            using var memoryStream = new MemoryStream();
+                            attachment.Content.DecodeTo(memoryStream);
+                            byte[] encryptedFileData = memoryStream.ToArray();
+
+                            // Найти текстовую часть с ключом и IV для этого файла
+                            var keyPart = multipart.OfType<TextPart>().FirstOrDefault(p => p.Text.StartsWith(ComputeSHA256Hash(attachment.FileName) + ":")) ?? 
+                                throw new Exception("Не удалось найти ключ для файла: " + attachment.FileName);
+
+                            // Извлечь зашифрованный ключ и IV
+                            string base64KeyAndIV = keyPart.Text.Split(':')[1];
+                            byte[] encryptedKeyAndIV = Convert.FromBase64String(base64KeyAndIV);
+
+                            // получить закрытый ключ
+                            RSAParameters privateKeyParams = ParsePrivateKeyFromXml(filePath);
+                            
+                            // Расшифровка файла
+                            byte[] decryptedFileData = DecryptFile3DES(encryptedFileData, encryptedKeyAndIV, privateKeyParams);
+
+                            // Сохранение расшифрованного файла
+                            string outputPath = Path.Combine($"DecryptedFiles\\{request.Email}\\{request.LetterId}", attachment.FileName);
+
+                            // Убеждаемся, что папка существует
+                            Directory.CreateDirectory($"DecryptedFiles\\{request.Email}\\{request.LetterId}");
+
+                            // сохраняем дешифрованный файл чтоб пользователь мог его скачать
+                            System.IO.File.WriteAllBytes(outputPath, decryptedFileData);
+
+                            // Добавляем путь файла в список
+                            decryptedFiles.Add(outputPath); 
+                        }
+                    }
+                }
             }
             finally
             {
@@ -454,11 +535,13 @@ public class MailController(MailDbContext context) : Controller
             // Отключение
             client.Disconnect(true);
 
-            return new(new {
+            return new(new
+            {
                 Subject = message.Subject,
                 From = ExtractQuotedText(message.From.ToString()),
                 Date = $"{message.Date:D}, {message.Date:t}",
-                TextBody = decriptText
+                TextBody = decriptText,
+                Attachments = decryptedFiles // Возвращаем пути к расшифрованным файлам
             });
         }
         catch (Exception ex)
@@ -467,11 +550,60 @@ public class MailController(MailDbContext context) : Controller
         }
     }
 
+
+    // скачивание файла прикреплённого к письму
+    [HttpPost]
+    public IActionResult DownloadFile([FromBody] string filePath)
+    {
+        try
+        {
+            if (!System.IO.File.Exists(filePath)) return NotFound(); // Файл не найден
+
+            string fileName = Path.GetFileName(filePath);
+            var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+
+            return File(fileStream, "application/octet-stream", fileName); // Возвращает файл
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Ошибка сервера: {ex.Message}"); // Обработка ошибок
+        }
+
+    }
+
     #endregion
 
     #region Отправка писем
 
     #region Шифрование
+
+    // шифирование файлов
+    private Tuple<byte[], byte[]> EncryptFile3DES(byte[] fileData, RSAParameters rsaPublicKey)
+    {
+        // Генерация ключа и IV для 3DES
+        byte[] key = GenerateTripleDESKey(); // 24 байта для 3DES
+        byte[] iv = GenerateIV(); // 8 байт
+
+        // Шифрование файла с помощью 3DES
+        using MemoryStream encryptedStream = new();
+
+        using (TripleDESCryptoServiceProvider tripleDES = new())
+        {
+            tripleDES.Key = key;
+            tripleDES.IV = iv;
+            tripleDES.Mode = CipherMode.CBC;
+            tripleDES.Padding = PaddingMode.PKCS7;
+
+            using CryptoStream cryptoStream = new(encryptedStream, tripleDES.CreateEncryptor(), CryptoStreamMode.Write);
+            cryptoStream.Write(fileData, 0, fileData.Length);
+        }
+
+        // Шифрование ключа 3DES и IV с помощью RSA
+        byte[] keyAndIV = key.Concat(iv).ToArray();
+        byte[] encrypted3DESKeyAndIV = EncryptRSA(keyAndIV, rsaPublicKey);
+
+        return Tuple.Create(encryptedStream.ToArray(), encrypted3DESKeyAndIV);
+    }
 
     // шифрование тела письма
     public string EncriptMailBody(MailSendRequest request)
@@ -549,6 +681,17 @@ public class MailController(MailDbContext context) : Controller
         return tripleDES.Key;
     }
 
+    // Генерация 8-байтного вектора инициализации (IV)
+    private byte[] GenerateIV()
+    {
+        byte[] iv = new byte[8];
+        using (var rng = RandomNumberGenerator.Create())
+        {
+            rng.GetBytes(iv);
+        }
+        return iv;
+    }
+
     // Шифрует текст с помощью TripleDES
     public static byte[] EncryptTripleDES(string text, byte[] key)
     {
@@ -623,12 +766,13 @@ public class MailController(MailDbContext context) : Controller
         public string AppPassword { get; set; }
         public string RecipientEmail { get; set; }
         public string Subject { get; set; }
-        public string Body { get; set; }
+        public string Body { get; set; } = string.Empty;
+        public IFormFile[] Files { get; set; } = Array.Empty<IFormFile>();
     }
 
     // Отправка письма
     [HttpPost]
-    public IActionResult SendMail([FromBody] MailSendRequest request)
+    public IActionResult SendMail([FromForm] MailSendRequest request)
     {
         try
         {
@@ -638,13 +782,52 @@ public class MailController(MailDbContext context) : Controller
             message.From.Add(new MailboxAddress(request.Email, request.Email));
             message.To.Add(new MailboxAddress(request.RecipientEmail, request.RecipientEmail));
             message.Subject = request.Subject;
+            
+            // Создаем multipart/mixed сообщение для поддержки текста и вложений
+            var multipart = new Multipart("mixed");
+            message.Body = multipart;
 
-            // шифрование сообщения
-            message.Body = new TextPart("plain")
+            // Добавляем текстовую часть (зашифрованная)
+            // шифруем только если есть сообщение
+            var textPart = new TextPart("plain") { Text = !string.IsNullOrEmpty(request.Body) ? EncriptMailBody(request) : request.Body };
+            multipart.Add(textPart);
+
+            // Добавляем файлы в качестве вложений, если они есть
+            if (request.Files != null)
             {
-                Text = EncriptMailBody(request)
-            };
+                var record = _db.MailBoxesKeys.FirstOrDefault(r => r.UserFrom.Equals(request.Email) && r.UserTo.Equals(request.RecipientEmail)) ?? 
+                    throw new Exception("Ключ для шифрования не найден в базе");
 
+                RSAParameters publicKeyParams = ParseRsaPublicKey(record.EncriptOpenKey) ?? throw new Exception("Ошибка парсинга открытого ключа");
+
+                foreach (var file in request.Files)
+                {
+                    using var stream = file.OpenReadStream();
+                    using MemoryStream ms = new();
+                    stream.CopyTo(ms);
+                    var encryptedFileWithKey = EncryptFile3DES(ms.ToArray(), publicKeyParams);
+
+
+                    var attachment = new MimePart("application/octet-stream")
+                    {
+                        Content = new MimeContent(new MemoryStream(encryptedFileWithKey.Item1)),
+                        ContentDisposition = new ContentDisposition(ContentDisposition.Attachment) { FileName = file.FileName },
+                        ContentTransferEncoding = ContentEncoding.Base64
+                    };
+
+                    string fileHash = ComputeSHA256Hash(file.FileName); // используем SHA256
+
+                    var encryptedKeyAttachment = new TextPart("plain")
+                    {
+                        Text = $"{fileHash}:{Convert.ToBase64String(encryptedFileWithKey.Item2)}" // хэш + ключ + инит вектор
+                    };
+
+                    multipart.Add(attachment);
+                    multipart.Add(encryptedKeyAttachment);
+                }
+            }
+
+            // собственно отправка письма
             using (var client = new SmtpClient())
             {
                 // Подключение к SMTP-серверу
@@ -658,6 +841,7 @@ public class MailController(MailDbContext context) : Controller
                 client.Disconnect(true);
             }
 
+            // меняем переменную на imap протокол для синхронизации папки "входящие"
             connect = request.Email.EndsWith("@yandex.ru") || request.Email.EndsWith("@ya.ru") ? "imap.yandex.ru" : "imap.mail.ru";
 
             // Подключение к IMAP (попытка синхронизации папки отправленные)
@@ -675,12 +859,6 @@ public class MailController(MailDbContext context) : Controller
                 // открываем папку на редактирование
                 sentFolder.Open(FolderAccess.ReadWrite);
 
-                // отправителю сохраняем письмо без какого-либо шифрования
-                message.Body = new TextPart("plain")
-                {
-                    Text = request.Body
-                };
-
                 // Сохранение сообщения
                 sentFolder.Append(message, MessageFlags.Seen);
 
@@ -695,5 +873,91 @@ public class MailController(MailDbContext context) : Controller
         }
     }
 
+    private string ComputeSHA256Hash(string input)
+    {
+        byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant(); // строковое представление хеша
+    }
+
     #endregion
+
+    public class DeleteLetterRequest : LettersMailRequest
+    {
+        public int LetterId { get; set; } // индекс письма в массиве
+    }
+
+    // отправка письма в корзину
+    [HttpPost]
+    public IActionResult MoveToTrash([FromBody] DeleteLetterRequest request)
+    {
+        try
+        {
+            using (var client = new ImapClient())
+            {
+
+                // Определяем IMAP-сервер
+                string connect = request.Email.EndsWith("@yandex.ru") || request.Email.EndsWith("@ya.ru")
+                    ? "imap.yandex.ru"
+                    : "imap.mail.ru";
+
+                // Подключение к IMAP-серверу
+                client.Connect(connect, 993, SecureSocketOptions.SslOnConnect);
+
+                // Аутентификация
+                client.Authenticate(request.Email, request.AppPassword);
+
+                // Используем словарь для упрощения доступа к папкам
+                var folders = new Dictionary<string, Func<IMailFolder>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "Input",  () => client.Inbox },
+                    { "Output", () => connect.Contains("yandex") ? client.GetFolder("Sent") : client.GetFolder("Отправленные") },
+                    { "Drafts", () => connect.Contains("yandex") ? client.GetFolder("Drafts") : client.GetFolder("Черновики") },
+                    { "Trash",  () => connect.Contains("yandex") ? client.GetFolder("Trash") : client.GetFolder("Корзина") },
+                };
+
+                // Проверяем, что папка существует в словаре
+                if (!folders.TryGetValue(request.Action, out var getSourceFolder))
+                    throw new NotImplementedException($"Action '{request.Action}' not supported.");
+
+                // Получаем исходную папку (из которой будем перемещать письмо)
+                var sourceFolder = getSourceFolder();
+                sourceFolder.Open(FolderAccess.ReadWrite);
+
+                // Получаем список всех уникальных идентификаторов сообщений
+                var query = SearchQuery.All;
+                var uids = sourceFolder.Search(query);
+
+                // Проверяем, что индекс сообщения валиден
+                if (request.LetterId < 0 || request.LetterId >= uids.Count)
+                    throw new ArgumentOutOfRangeException(nameof(request.LetterId), "Индекс сообщения вне диапазона.");
+
+                // Получаем уникальный идентификатор сообщения
+                var messageId = uids[request.LetterId];
+
+                // Получаем папку "Корзина"
+                var trashFolder = folders["Trash"]();
+
+                try
+                {
+                    // Перемещаем сообщение в папку "Корзина"
+                    sourceFolder.MoveTo(messageId, trashFolder);
+                }
+                finally
+                {
+                    // Закрываем папки
+                    sourceFolder.Close();
+                }
+
+                // Отключение от сервера
+                client.Disconnect(true);
+            }
+
+            return Ok(new { Message = "Письмо успешно перемещено в корзину." });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Ошибка сервера: {ex.Message}");
+        }
+    }
 }
+
