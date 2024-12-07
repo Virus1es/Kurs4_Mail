@@ -46,6 +46,7 @@ export default function ShowUpperBar() {
     // используется для redirect
     const navigate = useNavigate();
 
+    // отображение выезжающей панели (SlideBar)
     const [visible, setVisible] = useState(false);
 
     // Действия: смена аккаунта и добавление аккаунта
@@ -72,8 +73,24 @@ export default function ShowUpperBar() {
     // адрес на который будет отправлен запрос дружбы
     const [friend, setFriend] = useState('');
 
+    // отключение кнопки "Отправить письмо"
+    const [disableSendLetter, setDisableSendLetter] = useState(false);
+
+    // отключение кнопки "Отправить запрос дружбы"
+    const [disableSendFriend, setDisableSendFriend] = useState(false);
+
+    // Для хранения выбранных файлов
+    const [files, setFiles] = useState([]);
+
+    // Обработчик выбора файлов
+    const onFileSelect = (event) => {
+        setFiles(event.files); // Обновляем список выбранных файлов
+    };
+
+    // если пользователь подтвердил выход из аккаунта
     const accept = () => LogoutUser();
 
+    // если нет подтверждения, то ничего не делаем
     const reject = () => {}
 
     const userAcc = () => {
@@ -188,6 +205,7 @@ export default function ShowUpperBar() {
         {
             label: 'Написать письмо',
             icon: 'pi pi-envelope',
+            disabled: disableSendLetter,
             command: () => {
                 setVisibleLetterDialog(true);
             }
@@ -195,6 +213,7 @@ export default function ShowUpperBar() {
         {
             label: 'Отправить запрос дружбы',
             icon: 'pi pi-user-plus',
+            disabled: disableSendFriend,
             command: () => {
                 setVisibleFriendDialog(true);
             }
@@ -207,15 +226,26 @@ export default function ShowUpperBar() {
             <Button label="Отправить"
                     icon="pi pi-check"
                     onClick={() => {
-                        setVisibleFriendDialog(false);
-
                         const credentialsJSON = localStorage.getItem('userCredentials');
 
                         let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
 
                         const index = parseInt(localStorage.getItem('curUser'));
 
-                        sendFriendRequest(data[index]?.email);
+                        if (friend !== '') {
+                            setVisibleFriendDialog(false);
+
+                            setDisableSendFriend(true);
+
+                            sendFriendRequest(data[index]?.email);
+                        }
+                        else {
+                            toast.current.show({
+                                severity: 'error',
+                                summary: 'Ошибка',
+                                detail: "Введите получателя запроса"
+                            });
+                        }
                     }}
             />
         </div>
@@ -255,7 +285,9 @@ export default function ShowUpperBar() {
 
             // сброс данных после отправки
             setFriend('');
+            setDisableSendFriend(false);
         } catch (error) {
+            setDisableSendFriend(false);
             console.error("Ошибка:", error);
             toast.current.show({
                 severity: 'error',
@@ -271,57 +303,75 @@ export default function ShowUpperBar() {
             <Button label="Отправить"
                     icon="pi pi-check"
                     onClick={() => {
-                        setVisibleLetterDialog(false);
-
                         const credentialsJSON = localStorage.getItem('userCredentials');
 
                         let data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
 
                         const index = parseInt(localStorage.getItem('curUser'));
 
-                        fetch("http://localhost:5113/mail/SendMail", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json", // Тип содержимого
-                            },
-                            body: JSON.stringify({
-                                Email: data[index]?.email,
-                                AppPassword: data[index]?.password,
-                                RecipientEmail: mailTo,
-                                Subject: subject,
-                                Body: mailBody
-                            }),
-                        })
-                            .then(response => {
-                                // Обработка ответа от сервера
-                                if (!response.ok) {
-                                    // Проверка на ошибки HTTP (4xx или 5xx)
-                                    // Создаём ошибку, если ответ не успешный.
-                                    throw new Error(`HTTP error! status: ${response.status}`);
-                                }
-                                return response;
-                            })
-                            .then(data => {
-                                toast.current.show({
-                                    severity: 'success',
-                                    summary: 'Письмо отправлено',
-                                    detail: `Письмо отправлено пользователю ${mailTo}`
-                                });
+                        if (mailTo !== ''){
+                            setVisibleLetterDialog(false);
 
-                                // сброс данных после отправки
-                                setMailTo('');
-                                setSubject('');
-                                setMailBody('');
-                            })
-                            .catch(error => {
-                                // Обработка ошибок
-                                console.error("Ошибка:", error);
-                                toast.current.show({
-                                    severity: 'error',
-                                    summary: 'Ошибка',
-                                    detail: 'Что-то пошло не так :('
-                                });
+                            setDisableSendLetter(true);
+
+                            const formData = new FormData();
+                            formData.append("Email", data[index]?.email);
+                            formData.append("AppPassword", data[index]?.password);
+                            formData.append("RecipientEmail", mailTo);
+                            formData.append("Subject", subject);
+
+                            mailBody !== '' && formData.append("Body", mailBody);
+
+                            // Добавляем файлы
+                            files.forEach((file) => {
+                                formData.append("Files", file);
                             });
+
+                            fetch("http://localhost:5113/mail/SendMail", {
+                                method: "POST",
+                                body: formData
+                            })
+                                .then(response => {
+                                    // Обработка ответа от сервера
+                                    if (!response.ok) {
+                                        // Проверка на ошибки HTTP (4xx или 5xx)
+                                        // Создаём ошибку, если ответ не успешный.
+                                        throw new Error(`HTTP error! status: ${response.status}`);
+                                    }
+                                    return response;
+                                })
+                                .then(data => {
+                                    toast.current.show({
+                                        severity: 'success',
+                                        summary: 'Письмо отправлено',
+                                        detail: `Письмо отправлено пользователю ${mailTo}`
+                                    });
+
+                                    // сброс данных после отправки
+                                    setMailTo('');
+                                    setSubject('');
+                                    setMailBody('');
+                                    setFiles([]);
+                                    setDisableSendLetter(false);
+                                })
+                                .catch(error => {
+                                    setDisableSendLetter(false);
+                                    // Обработка ошибок
+                                    console.error("Ошибка:", error);
+                                    toast.current.show({
+                                        severity: 'error',
+                                        summary: 'Ошибка',
+                                        detail: 'Что-то пошло не так :('
+                                    });
+                                });
+                        }
+                        else {
+                            toast.current.show({
+                                severity: 'error',
+                                summary: 'Ошибка',
+                                detail: 'Введите почту получателя'
+                            });
+                        }
                     }}
             />
         </div>
@@ -344,28 +394,34 @@ export default function ShowUpperBar() {
                             <div className="flex justify-content-around"
                                  style={{width: '100%', padding: '20px'}}
                             >
-                                <FloatLabel style={{ margin: '5px'}}>
+                                <FloatLabel style={{ margin: '5px', width: '50%'}}>
                                     <InputText id="mailTo"
                                                value={mailTo}
+                                               style={{width: '100%'}}
                                                onChange={(e) => setMailTo(e.target.value)}
                                     />
                                     <label htmlFor="mailTo">Кому</label>
                                 </FloatLabel>
 
-                                <FloatLabel style={{ margin: '5px'}}>
+                                <FloatLabel style={{ margin: '5px' , width: '50%'}}>
                                     <InputText id="subject"
                                                value={subject}
+                                               style={{width: '100%'}}
                                                onChange={(e) => setSubject(e.target.value)}
                                     />
                                     <label htmlFor="subject">Тема</label>
                                 </FloatLabel>
+                            </div>
 
-                                <FileUpload mode="basic"
-                                            name="demo[]"
-                                            url="/api/upload"
-                                            accept="file/*"
-                                            maxFileSize={1000000}
+                            <div className="m-2">
+                                <FileUpload name="files[]"
+                                            multiple
+                                            customUpload
+                                            uploadHandler={onFileSelect}
+                                            onSelect={onFileSelect}
                                             chooseLabel="Выбрать файлы"
+                                            uploadLabel="Загрузить"
+                                            cancelLabel="Сбросить"
                                 />
                             </div>
 
@@ -385,9 +441,10 @@ export default function ShowUpperBar() {
                     >
                         <div className="card flex justify-content-around"
                              style={{width: '100%', padding: '20px'}}>
-                            <FloatLabel style={{ margin: '5px'}}>
+                            <FloatLabel style={{ margin: '5px', width: '100%'}}>
                                 <InputText id="friend"
                                            value={friend}
+                                           style={{width: '100%'}}
                                            onChange={(e) => setFriend(e.target.value)}
                                 />
                                 <label htmlFor="mailTo">Кому</label>

@@ -10,6 +10,8 @@ import { TabMenu } from 'primereact/tabmenu';
 import {Editor} from "primereact/editor";
 import {Dialog} from "primereact/dialog";
 import { Tag } from 'primereact/tag';
+import { Button } from 'primereact/button';
+import { ContextMenu } from 'primereact/contextmenu';
 
 export default function ShowHome(){
     // диалоговое окно для ответа на запрос дружбы
@@ -44,7 +46,68 @@ export default function ShowHome(){
 
     const navigate = useNavigate();
 
+    //
     const [activeIndex, setActiveIndex] = useState(0);
+
+    // приложенные к письму файлы
+    const [attachments, setAttachments] = useState([]);
+
+    // контекстное меню
+    const cm = useRef(null);
+
+    // контекстное меню, действия
+    const CmItems = [
+        { label: 'Удалить письмо', icon: 'pi pi-fw pi-times', command: () => deleteMail(selectedLetter) }
+    ];
+
+    // функция перемещения письма в корзину (удаление)
+    const deleteMail = (letter) => {
+        const credentialsJSON = localStorage.getItem('userCredentials');
+        const data = credentialsJSON ? JSON.parse(credentialsJSON) : [];
+
+        const index = parseInt(localStorage.getItem('curUser'));
+
+        const curUser = data[index];
+
+        console.log(letter);
+
+        fetch("http://localhost:5113/mail/MoveToTrash", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json", // Тип содержимого
+            },
+            body: JSON.stringify({
+                Email: curUser.email,
+                AppPassword: curUser.password,
+                Action: curFolder,
+                LetterId: letter.id
+            }),
+        })
+            .then(response => {
+                // Обработка ответа от сервера
+                if (!response.ok) {
+                    // Проверка на ошибки HTTP (4xx или 5xx)
+                    // Создаём ошибку, если ответ не успешный.
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response;
+            })
+            .then(data => {
+                setSelectedLetter(null);
+                window.location.reload();
+            })
+            .catch(error => {
+                setSelectedLetter(null);
+                // Обработка ошибок
+                console.error("Ошибка:", error);
+                toast.current.show({
+                    severity: 'error',
+                    summary: 'Ошибка',
+                    detail: 'Что-то пошло не так :('
+                });
+            });
+
+    };
 
     const checkUser = () => {
         if(isNullOrUndef(localStorage.getItem('userCredentials'))) {
@@ -169,12 +232,8 @@ export default function ShowHome(){
                 }
             }
             const data = await response.json();
-
-            console.log(data);
             if(typeof data !== 'string'){
                 setFriendSender(data);
-
-                console.log(friendSender);
             }
         } catch (error) {
             console.error("Ошибка:", error);
@@ -250,20 +309,27 @@ export default function ShowHome(){
         }
         else{
             return (
-                <DataTable value={letters}
-                           tableStyle={{minWidth: '60rem'}}
-                           style={{width: '100%'}}
-                           emptyMessage={"Папка пуста :("}
-                           stripedRows
-                           selectionMode="single"
-                           selection={selectedLetter}
-                           onSelectionChange={(e) => setSelectedLetter(e.value)} dataKey="id"
-                           onRowSelect={onRowSelect}
-                >
-                    <Column field="from" header="Отправитель"></Column>
-                    <Column field="subject" header="Тема"></Column>
-                    <Column field="date" header="Дата"></Column>
-                </DataTable>);
+                <>
+                    <ContextMenu model={CmItems} ref={cm} onHide={() => setSelectedLetter(null)} />
+                    <DataTable value={letters}
+                               tableStyle={{minWidth: '60rem'}}
+                               style={{width: '100%'}}
+                               emptyMessage={"Папка пуста :("}
+                               stripedRows
+                               selectionMode="single"
+                               selection={selectedLetter}
+                               onSelectionChange={(e) => setSelectedLetter(e.value)}
+                               dataKey="id"
+                               onRowSelect={onRowSelect}
+                               onContextMenu={(e) => cm.current.show(e.originalEvent)}
+                               contextMenuSelection={selectedLetter}
+                               onContextMenuSelectionChange={(e) => setSelectedLetter(e.value)}
+                    >
+                        <Column field="from" header="Отправитель"></Column>
+                        <Column field="subject" header="Тема"></Column>
+                        <Column field="date" header="Дата"></Column>
+                    </DataTable>
+                </>);
         }
     }
 
@@ -309,7 +375,9 @@ export default function ShowHome(){
                     throw new Error(`Error! ${data}`);
                 }
                 setLetterInfo(data);
+                setAttachments(data.attachments);
                 setVisibleLetterDialog(true);
+                setSelectedLetter(null);
             })
             .catch(error => {
                 // Обработка ошибок
@@ -322,14 +390,74 @@ export default function ShowHome(){
             });
     };
 
-    const letterFooter = (
-        <Tag className="text-base"
-             style={{height: '30px'}}
-             icon="pi pi-check"
-             severity="success"
-             value="Подписан">
-        </Tag>
-    );
+    const letterFooter = () => {
+        return (!isNullOrUndef(letterInfo?.body) && letterInfo?.body !== '') ?
+            <Tag className="text-base"
+                 style={{height: '30px'}}
+                 icon="pi pi-check"
+                 severity="success"
+                 value="Подписан">
+            </Tag>
+        : <></>;
+    };
+
+    // получение имени файла
+    const getFileName = (filePath) => {
+        const lastSlashIndex = filePath.lastIndexOf("\\");
+
+        return (lastSlashIndex !== -1) ? filePath.substring(lastSlashIndex + 1) : '';
+    }
+
+    // кнопки для скачивания файлов
+    const FileButtons = ({ attachments }) => {
+        const handleDownload = (fileUrl) => {
+            fetch(`http://localhost:5113/mail/DownloadFile`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(fileUrl),
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.blob();
+                })
+                .then(blob => {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = getFileName(fileUrl);
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                })
+                .catch(error => {
+                    console.error('Ошибка при скачивании файла:', error);
+                    toast.current.show({
+                        severity: 'error',
+                        summary: 'Ошибка',
+                        detail: 'Ошибка при скачивании :('
+                    });
+                });
+        };
+
+        return (
+            <div className="p-d-flex p-flex-column">
+                {attachments.map((file, index) => (
+                    <Button
+                        key={index}
+                        label={getFileName(file)}
+                        icon="pi pi-download"
+                        className="m-2"
+                        onClick={() => handleDownload(file)}
+                    />
+                ))}
+            </div>
+        );
+    };
 
     return(
         <div>
@@ -346,9 +474,20 @@ export default function ShowHome(){
                     footer={letterFooter}
             >
                 <div className="card">
-                    <p>
-                        Отправитель: {letterInfo?.from}
-                    </p>
+                    <div className="flex justify-content-around">
+                        <p className="m-2">
+                            Отправитель: {letterInfo?.from}
+                        </p>
+
+                        <p className="m-2 text-sm text-color-secondary">
+                            {letterInfo?.date}
+                        </p>
+                    </div>
+
+                    <div className="m-2">
+                        <FileButtons attachments={attachments}/>
+                    </div>
+
                     <Editor value={letterInfo?.textBody}
                             readOnly
                             style={{height: '320px'}}
