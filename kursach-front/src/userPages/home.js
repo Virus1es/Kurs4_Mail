@@ -391,7 +391,10 @@ export default function ShowHome(){
     };
 
     const letterFooter = () => {
-        return (!isNullOrUndef(letterInfo?.body) && letterInfo?.body !== '') ?
+        return (
+            ((!isNullOrUndef(letterInfo?.textBody) && letterInfo?.textBody !== '')
+                || (letterInfo?.attachments.length !== 0))
+            && letterInfo?.isSign) ?
             <Tag className="text-base"
                  style={{height: '30px'}}
                  icon="pi pi-check"
